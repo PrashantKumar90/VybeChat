@@ -1,0 +1,78 @@
+{
+  "apiVersion": "v1.2",
+  "name": "group-chat-app",
+  "description": "Group-based real-time chat app: Node/Express/Socket.IO backend + React/Vite frontend, built from Dockerfiles in this repo.",
+  "spec": {
+    "kind": "Workflow",
+    "spec": {
+      "type": "sequential",
+      "context": { "projectId": "group-chat-app" },
+      "steps": [
+        {
+          "kind": "Project",
+          "ref": "project",
+          "spec": {
+            "name": "group-chat-app",
+            "region": "europe-west"
+          }
+        },
+        {
+          "kind": "Workflow",
+          "spec": {
+            "type": "parallel",
+            "context": { "projectId": "${refs.project.id}" },
+            "steps": [
+              {
+                "kind": "CombinedService",
+                "ref": "backend",
+                "spec": {
+                  "name": "backend",
+                  "billing": { "deploymentPlan": "nf-compute-100-1" },
+                  "deployment": { "instances": 1 },
+                  "vcsData": {
+                    "projectUrl": "REPLACE_WITH_YOUR_GITHUB_REPO_URL",
+                    "projectType": "github",
+                    "projectBranch": "main"
+                  },
+                  "buildSettings": {
+                    "dockerfile": { "buildEngine": "kaniko", "dockerFilePath": "/backend/Dockerfile", "dockerWorkDir": "/backend" }
+                  },
+                  "ports": [{ "name": "http", "internalPort": 5000, "public": true, "protocol": "HTTP" }],
+                  "healthChecks": [
+                    { "protocol": "HTTP", "path": "/health", "port": 5000 }
+                  ]
+                }
+              },
+              {
+                "kind": "CombinedService",
+                "ref": "frontend",
+                "spec": {
+                  "name": "frontend",
+                  "billing": { "deploymentPlan": "nf-compute-100-1" },
+                  "deployment": { "instances": 1 },
+                  "vcsData": {
+                    "projectUrl": "REPLACE_WITH_YOUR_GITHUB_REPO_URL",
+                    "projectType": "github",
+                    "projectBranch": "main"
+                  },
+                  "buildSettings": {
+                    "dockerfile": {
+                      "buildEngine": "kaniko",
+                      "dockerFilePath": "/frontend/Dockerfile",
+                      "dockerWorkDir": "/frontend",
+                      "buildArguments": {
+                        "VITE_API_URL": "REPLACE_WITH_BACKEND_PUBLIC_URL",
+                        "VITE_SOCKET_URL": "REPLACE_WITH_BACKEND_PUBLIC_URL"
+                      }
+                    }
+                  },
+                  "ports": [{ "name": "http", "internalPort": 80, "public": true, "protocol": "HTTP" }]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
