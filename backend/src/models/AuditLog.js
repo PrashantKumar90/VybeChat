@@ -30,3 +30,48 @@ export async function recordAuditLog({ actorId = null, action, targetType, targe
     console.error("[audit] failed to record log:", err.message);
   }
 }
+
+
+
+
+// import mongoose from "mongoose";
+
+// // Audit logging is currently disabled.
+// // The model is kept so existing imports/references do not break.
+// const auditLogSchema = new mongoose.Schema(
+//   {
+//     actorId: {
+//       type: mongoose.Schema.Types.ObjectId,
+//       ref: "User",
+//       default: null,
+//     },
+//     action: {
+//       type: String,
+//       required: true,
+//     },
+//     targetType: {
+//       type: String,
+//       required: true,
+//     },
+//     targetId: {
+//       type: mongoose.Schema.Types.Mixed,
+//       default: null,
+//     },
+//     metadata: {
+//       type: mongoose.Schema.Types.Mixed,
+//       default: {},
+//     },
+//   },
+//   { timestamps: { createdAt: "timestamp", updatedAt: false } }
+// );
+
+// auditLogSchema.index({ timestamp: -1 });
+// auditLogSchema.index({ action: 1, timestamp: -1 });
+
+// export const AuditLog = mongoose.model("AuditLog", auditLogSchema);
+
+// // Audit logging disabled.
+// // Existing recordAuditLog() calls will safely do nothing.
+// export async function recordAuditLog() {
+//   return;
+// }
