@@ -1,90 +1,77 @@
-import nodemailer from "nodemailer";
+const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
 
-let transporter = null;
+function getBrevoApiKey() {
+  const apiKey = process.env.BREVO_API_KEY;
 
-function getTransporter() {
-  if (transporter) return transporter;
+  if (!apiKey) {
+    throw new Error("BREVO_API_KEY is not configured.");
+  }
 
-  const host = process.env.SMTP_HOST;
-  const port = Number(process.env.SMTP_PORT) || 587;
-  const user = process.env.SMTP_USER;
-  const password = process.env.SMTP_PASSWORD;
+  return apiKey;
+}
 
-  if (!host || !user || !password) {
+function getSender() {
+  const email = process.env.BREVO_SENDER_EMAIL;
+  const name = process.env.BREVO_SENDER_NAME || "VYBE";
+
+  if (!email) {
+    throw new Error("BREVO_SENDER_EMAIL is not configured.");
+  }
+
+  return {
+    email,
+    name,
+  };
+}
+
+async function sendMail({ to, subject, html, text }) {
+  const apiKey = getBrevoApiKey();
+
+  const response = await fetch(BREVO_API_URL, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "api-key": apiKey,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      sender: getSender(),
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+      textContent: text || undefined,
+    }),
+  });
+
+  const responseText = await response.text();
+
+  let data = {};
+
+  try {
+    data = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    data = { raw: responseText };
+  }
+
+  if (!response.ok) {
+    console.error("[email] Brevo API failed:", {
+      status: response.status,
+      message: data?.message,
+      code: data?.code,
+    });
+
     throw new Error(
-      "SMTP configuration is incomplete. Required: SMTP_HOST, SMTP_USER, SMTP_PASSWORD."
+      data?.message || `Brevo API returned HTTP ${response.status}`
     );
   }
 
-  transporter = nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
-    auth: {
-      user,
-      pass: password,
-    },
+  console.log("[email] Brevo email sent successfully:", {
+    messageId: data?.messageId,
+    to,
+    subject,
   });
 
-  return transporter;
-}
-
-// Verify SMTP connection when the backend starts.
-// This does NOT send an email.
-export async function verifyEmailService() {
-  try {
-    const transport = getTransporter();
-    await transport.verify();
-
-    console.log("[email] SMTP connection verified successfully.");
-    return true;
-  } catch (err) {
-    console.error("[email] SMTP verification failed:", {
-      message: err.message,
-      code: err.code,
-      command: err.command,
-      response: err.response,
-      responseCode: err.responseCode,
-    });
-
-    return false;
-  }
-}
-
-async function sendMail({ to, subject, html }) {
-  const from = process.env.SMTP_FROM;
-
-  if (!from) {
-    throw new Error("SMTP_FROM is not configured.");
-  }
-
-  console.log("[email] Sending email:", subject);
-
-  try {
-    const info = await getTransporter().sendMail({
-      from,
-      to,
-      subject,
-      html,
-    });
-
-    console.log("[email] Email sent successfully:", {
-      messageId: info.messageId,
-      response: info.response,
-    });
-
-    return info;
-  } catch (err) {
-    console.error("[email] Failed to send email:", {
-      message: err.message,
-      code: err.code,
-      command: err.command,
-      response: err.response,
-      responseCode: err.responseCode,
-    });
-
-    throw err;
-  }
+  return data;
 }
 
 export async function sendRegistrationReceivedEmail(email) {
@@ -92,25 +79,45 @@ export async function sendRegistrationReceivedEmail(email) {
 
   return sendMail({
     to: email,
-    subject: "Your registration has been received",
+    subject: "Your VYBE registration has been received",
     html: `
-      <p>Thanks for registering.</p>
+      <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+        <h2>Registration Received</h2>
 
-      <p>
-        Your account is currently
-        <strong>pending approval</strong>.
-      </p>
+        <p>Thanks for registering with <strong>VYBE</strong>.</p>
 
-      <p>
-        You'll receive another email once an administrator
-        has reviewed your request.
-      </p>
+        <p>
+          Your account is currently
+          <strong>pending approval</strong>.
+        </p>
 
-      ${
-        supportEmail
-          ? `<p>Questions? Contact us at ${supportEmail}.</p>`
-          : ""
-      }
+        <p>
+          You'll receive another email once an administrator
+          has reviewed your registration.
+        </p>
+
+        ${
+          supportEmail
+            ? `<p>Questions? Contact us at <a href="mailto:${supportEmail}">${supportEmail}</a>.</p>`
+            : ""
+        }
+
+        <p>Regards,<br><strong>VYBE Team</strong></p>
+      </div>
+    `,
+    text: `
+Registration Received
+
+Thanks for registering with VYBE.
+
+Your account is currently pending approval.
+
+You'll receive another email once an administrator has reviewed your registration.
+
+${supportEmail ? `Questions? Contact us at ${supportEmail}.` : ""}
+
+Regards,
+VYBE Team
     `,
   });
 }
@@ -122,27 +129,71 @@ export async function sendRegistrationApprovedEmail({
 }) {
   return sendMail({
     to: email,
-    subject: "Your registration has been approved",
+    subject: "Your VYBE registration has been approved",
     html: `
-      <p>
-        Good news — your registration has been approved.
-      </p>
+      <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+        <h2>Registration Approved</h2>
 
-      <p>
-        Your username:
-        <strong>${username}</strong>
-      </p>
+        <p>
+          Good news — your registration for
+          <strong>VYBE</strong> has been approved.
+        </p>
 
-      <p>
-        Click the link below to set your password and display name.
-        This link is single-use and will expire soon.
-      </p>
+        <p>
+          Your username:
+          <strong>${username}</strong>
+        </p>
 
-      <p>
-        <a href="${setupUrl}">
-          ${setupUrl}
-        </a>
-      </p>
+        <p>
+          Click the button below to complete your account setup.
+          You will create your password and display name there.
+        </p>
+
+        <p>
+          <a
+            href="${setupUrl}"
+            style="
+              display:inline-block;
+              padding:12px 20px;
+              background:#111827;
+              color:#ffffff;
+              text-decoration:none;
+              border-radius:6px;
+            "
+          >
+            Complete Account Setup
+          </a>
+        </p>
+
+        <p>
+          If the button doesn't work, use this link:
+        </p>
+
+        <p>
+          <a href="${setupUrl}">${setupUrl}</a>
+        </p>
+
+        <p>
+          This setup link is single-use and expires in 24 hours.
+        </p>
+
+        <p>Regards,<br><strong>VYBE Team</strong></p>
+      </div>
+    `,
+    text: `
+Registration Approved
+
+Good news — your registration for VYBE has been approved.
+
+Your username: ${username}
+
+Complete your account setup using this link:
+${setupUrl}
+
+This setup link is single-use and expires in 24 hours.
+
+Regards,
+VYBE Team
     `,
   });
 }
@@ -155,24 +206,42 @@ export async function sendRegistrationRejectedEmail({
 
   return sendMail({
     to: email,
-    subject: "Your registration was not approved",
+    subject: "Your VYBE registration was not approved",
     html: `
-      <p>
-        We're sorry to let you know your registration request
-        was not approved.
-      </p>
+      <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+        <h2>Registration Update</h2>
 
-      ${
-        reason
-          ? `<p>Reason: ${reason}</p>`
-          : ""
-      }
+        <p>
+          We're sorry to let you know that your VYBE
+          registration request was not approved.
+        </p>
 
-      ${
-        supportEmail
-          ? `<p>Questions? Contact us at ${supportEmail}.</p>`
-          : ""
-      }
+        ${
+          reason
+            ? `<p><strong>Reason:</strong> ${reason}</p>`
+            : ""
+        }
+
+        ${
+          supportEmail
+            ? `<p>Questions? Contact us at <a href="mailto:${supportEmail}">${supportEmail}</a>.</p>`
+            : ""
+        }
+
+        <p>Regards,<br><strong>VYBE Team</strong></p>
+      </div>
+    `,
+    text: `
+Registration Update
+
+We're sorry to let you know that your VYBE registration request was not approved.
+
+${reason ? `Reason: ${reason}` : ""}
+
+${supportEmail ? `Questions? Contact us at ${supportEmail}.` : ""}
+
+Regards,
+VYBE Team
     `,
   });
 }
@@ -183,22 +252,68 @@ export async function sendPasswordResetEmail({
 }) {
   return sendMail({
     to: email,
-    subject: "Reset your password",
+    subject: "Reset your VYBE password",
     html: `
-      <p>
-        We received a request to reset your password.
-      </p>
+      <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+        <h2>Password Reset</h2>
 
-      <p>
-        This link is single-use and will expire soon.
-        If you didn't request this, you can safely ignore this email.
-      </p>
+        <p>
+          We received a request to reset your VYBE password.
+        </p>
 
-      <p>
-        <a href="${resetUrl}">
-          ${resetUrl}
-        </a>
-      </p>
+        <p>
+          Click the button below to reset your password.
+        </p>
+
+        <p>
+          <a
+            href="${resetUrl}"
+            style="
+              display:inline-block;
+              padding:12px 20px;
+              background:#111827;
+              color:#ffffff;
+              text-decoration:none;
+              border-radius:6px;
+            "
+          >
+            Reset Password
+          </a>
+        </p>
+
+        <p>
+          If the button doesn't work, use this link:
+        </p>
+
+        <p>
+          <a href="${resetUrl}">${resetUrl}</a>
+        </p>
+
+        <p>
+          This link is single-use and expires in 1 hour.
+        </p>
+
+        <p>
+          If you didn't request this, you can safely ignore this email.
+        </p>
+
+        <p>Regards,<br><strong>VYBE Team</strong></p>
+      </div>
+    `,
+    text: `
+Password Reset
+
+We received a request to reset your VYBE password.
+
+Use this link to reset your password:
+${resetUrl}
+
+This link is single-use and expires in 1 hour.
+
+If you didn't request this, you can safely ignore this email.
+
+Regards,
+VYBE Team
     `,
   });
 }
