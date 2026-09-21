@@ -58,6 +58,10 @@ export default function ChatPage() {
     activeGroupIdRef.current = activeGroupId;
   }, [activeGroupId]);
 
+  // --------------------------------------------------
+  // Unread counts
+  // --------------------------------------------------
+
   function refreshUnreadCounts() {
     groupService.listUnreadCounts().then(({ data }) => {
       const map = {};
@@ -75,23 +79,19 @@ export default function ChatPage() {
   // --------------------------------------------------
 
   function handleIncomingMessage(payload) {
-    setMessages((prev) => {
-      if (payload.groupId !== activeGroupIdRef.current) {
-        return prev;
-      }
-
-      return [...prev, payload];
-    });
-
     if (payload.groupId !== activeGroupIdRef.current) {
       refreshUnreadCounts();
-    } else {
-      scrollToBottom();
+      return;
     }
+
+    setMessages((prev) => [...prev, payload]);
+
+    // Always move to the newest message for the active chat.
+    scrollToBottom();
   }
 
   // --------------------------------------------------
-  // Typing indicator
+  // Typing
   // --------------------------------------------------
 
   function handleTypingUpdate({
@@ -131,6 +131,7 @@ export default function ChatPage() {
     setTypingUsers({});
     setNextCursor(null);
     setDraft("");
+
     cancelImagePreview();
 
     socketRef.current.emit(
@@ -146,7 +147,8 @@ export default function ChatPage() {
       }
     );
 
-    const { data } = await groupService.getMessages(groupId);
+    const { data } =
+      await groupService.getMessages(groupId);
 
     setMessages(data.messages || []);
     setNextCursor(data.nextCursor);
@@ -158,20 +160,16 @@ export default function ChatPage() {
       [groupId]: 0,
     }));
 
+    // Wait for messages to render, then go to bottom.
     requestAnimationFrame(() => {
-      scrollToBottom();
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
     });
-
-    // On mobile, automatically focus the composer.
-    // A browser may still decide not to open the keyboard
-    // unless this action originated from a user gesture.
-    setTimeout(() => {
-      messageInputRef.current?.focus();
-    }, 100);
   }
 
   // --------------------------------------------------
-  // Mobile back to group list
+  // Mobile back
   // --------------------------------------------------
 
   function backToGroups() {
@@ -191,19 +189,25 @@ export default function ChatPage() {
   }
 
   // --------------------------------------------------
-  // Older messages
+  // Load older messages
   // --------------------------------------------------
 
   async function loadOlderMessages() {
     if (!nextCursor || !activeGroupId) return;
 
     const container = messageListRef.current;
-    const prevScrollHeight = container?.scrollHeight || 0;
 
-    const { data } = await groupService.getMessages(
-      activeGroupId,
-      nextCursor
-    );
+    const previousScrollHeight =
+      container?.scrollHeight || 0;
+
+    const previousScrollTop =
+      container?.scrollTop || 0;
+
+    const { data } =
+      await groupService.getMessages(
+        activeGroupId,
+        nextCursor
+      );
 
     setMessages((prev) => [
       ...(data.messages || []),
@@ -212,11 +216,17 @@ export default function ChatPage() {
 
     setNextCursor(data.nextCursor);
 
+    // Preserve the user's position after adding older messages.
     requestAnimationFrame(() => {
-      if (container) {
-        container.scrollTop =
-          container.scrollHeight - prevScrollHeight;
-      }
+      if (!container) return;
+
+      const newScrollHeight =
+        container.scrollHeight;
+
+      container.scrollTop =
+        newScrollHeight -
+        previousScrollHeight +
+        previousScrollTop;
     });
   }
 
@@ -226,13 +236,20 @@ export default function ChatPage() {
     }
   }
 
+  // --------------------------------------------------
+  // Scroll to latest message
+  // --------------------------------------------------
+
   function scrollToBottom() {
     requestAnimationFrame(() => {
-      const el = messageListRef.current;
+      requestAnimationFrame(() => {
+        const element = messageListRef.current;
 
-      if (el) {
-        el.scrollTop = el.scrollHeight;
-      }
+        if (!element) return;
+
+        element.scrollTop =
+          element.scrollHeight;
+      });
     });
   }
 
@@ -246,7 +263,6 @@ export default function ChatPage() {
     const text = draft.trim();
 
     if (!text || !activeGroupId) {
-      // Keep the input focused even if there is nothing to send.
       messageInputRef.current?.focus();
       return;
     }
@@ -271,16 +287,17 @@ export default function ChatPage() {
 
     setDraft("");
 
-    socketRef.current.emit("typing:stop", {
-      groupId,
-    });
+    socketRef.current.emit(
+      "typing:stop",
+      {
+        groupId,
+      }
+    );
 
     /*
-     * Important for mobile:
-     *
-     * Keep the message input focused after sending.
-     * This prevents our React UI from intentionally
-     * removing focus from the input.
+     * Keep input focused after sending.
+     * This prevents our code from closing
+     * the mobile keyboard.
      */
     requestAnimationFrame(() => {
       messageInputRef.current?.focus();
@@ -288,7 +305,7 @@ export default function ChatPage() {
   }
 
   // --------------------------------------------------
-  // Draft / typing
+  // Typing input
   // --------------------------------------------------
 
   const handleDraftChange = useCallback(
@@ -297,17 +314,26 @@ export default function ChatPage() {
 
       if (!activeGroupId) return;
 
-      socketRef.current.emit("typing:start", {
-        groupId: activeGroupId,
-      });
-
-      clearTimeout(typingDebounceTimer);
-
-      typingDebounceTimer = setTimeout(() => {
-        socketRef.current.emit("typing:stop", {
+      socketRef.current.emit(
+        "typing:start",
+        {
           groupId: activeGroupId,
-        });
-      }, 2000);
+        }
+      );
+
+      clearTimeout(
+        typingDebounceTimer
+      );
+
+      typingDebounceTimer =
+        setTimeout(() => {
+          socketRef.current.emit(
+            "typing:stop",
+            {
+              groupId: activeGroupId,
+            }
+          );
+        }, 2000);
     },
     [activeGroupId]
   );
@@ -319,7 +345,8 @@ export default function ChatPage() {
   function stageImageFile(file) {
     if (!file) return;
 
-    const error = validateImageFile(file);
+    const error =
+      validateImageFile(file);
 
     if (error) {
       setImageError(error);
@@ -330,25 +357,32 @@ export default function ChatPage() {
 
     setPendingImage({
       file,
-      previewUrl: URL.createObjectURL(file),
+      previewUrl:
+        URL.createObjectURL(file),
     });
   }
 
   function handleFileInputChange(e) {
-    stageImageFile(e.target.files?.[0]);
+    stageImageFile(
+      e.target.files?.[0]
+    );
 
-    // Allow selecting the same file again.
     e.target.value = "";
   }
 
   function handleComposerPaste(e) {
     const item = Array.from(
       e.clipboardData?.items || []
-    ).find((i) => i.type.startsWith("image/"));
+    ).find((i) =>
+      i.type.startsWith("image/")
+    );
 
     if (item) {
       e.preventDefault();
-      stageImageFile(item.getAsFile());
+
+      stageImageFile(
+        item.getAsFile()
+      );
     }
   }
 
@@ -359,7 +393,9 @@ export default function ChatPage() {
 
     const file = Array.from(
       e.dataTransfer.files || []
-    ).find((f) => f.type.startsWith("image/"));
+    ).find((f) =>
+      f.type.startsWith("image/")
+    );
 
     stageImageFile(file);
   }
@@ -376,7 +412,12 @@ export default function ChatPage() {
   }
 
   async function confirmSendImage() {
-    if (!pendingImage || !activeGroupId) return;
+    if (
+      !pendingImage ||
+      !activeGroupId
+    ) {
+      return;
+    }
 
     setSendingImage(true);
 
@@ -388,9 +429,9 @@ export default function ChatPage() {
 
       cancelImagePreview();
 
-      // Keep composer focused on mobile.
       requestAnimationFrame(() => {
         messageInputRef.current?.focus();
+        scrollToBottom();
       });
     } catch (err) {
       setImageError(
@@ -406,21 +447,29 @@ export default function ChatPage() {
   // Derived values
   // --------------------------------------------------
 
-  const activeGroup = groups.find(
-    (g) => g._id === activeGroupId
-  );
+  const activeGroup =
+    groups.find(
+      (g) =>
+        g._id === activeGroupId
+    );
 
-  const typingNames = Object.values(typingUsers);
+  const typingNames =
+    Object.values(typingUsers);
+
+  // --------------------------------------------------
+  // UI
+  // --------------------------------------------------
 
   return (
     <div className="h-[100dvh] flex flex-col overflow-hidden bg-slate-50">
 
       {/* ==================================================
-          DESKTOP / MOBILE TOP HEADER
+          GROUP LIST HEADER
           ================================================== */}
 
-      {!activeGroupId ? (
+      {!activeGroupId && (
         <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-3">
+
           <div className="flex items-center justify-between">
 
             <div>
@@ -434,11 +483,14 @@ export default function ChatPage() {
             </div>
 
             <div className="flex items-center gap-3 text-sm">
+
               <span className="hidden sm:inline text-slate-500">
-                {user.displayName || user.email}
+                {user.displayName ||
+                  user.email}
               </span>
 
-              {user.role === "SUPER_ADMIN" && (
+              {user.role ===
+                "SUPER_ADMIN" && (
                 <Link
                   to="/admin/users"
                   className="hidden sm:inline text-slate-500 hover:text-slate-800"
@@ -460,12 +512,20 @@ export default function ChatPage() {
               >
                 Log out
               </button>
+
             </div>
 
           </div>
         </header>
-      ) : (
+      )}
+
+      {/* ==================================================
+          MOBILE CHAT HEADER
+          ================================================== */}
+
+      {activeGroupId && (
         <header className="sm:hidden shrink-0 border-b border-slate-200 bg-white px-3 py-2">
+
           <div className="flex items-center gap-3">
 
             <button
@@ -474,19 +534,22 @@ export default function ChatPage() {
               className="h-10 w-10 shrink-0 rounded-full flex items-center justify-center text-slate-700 hover:bg-slate-100 active:bg-slate-200"
               aria-label="Back to groups"
             >
-              <span className="text-2xl leading-none">
+              <span className="text-3xl leading-none">
                 ‹
               </span>
             </button>
 
             <div className="min-w-0 flex-1">
+
               <h1 className="truncate font-semibold text-slate-800">
-                {activeGroup?.name || "Chat"}
+                {activeGroup?.name ||
+                  "Chat"}
               </h1>
 
               <p className="text-xs text-slate-400">
                 Group
               </p>
+
             </div>
 
           </div>
@@ -494,7 +557,7 @@ export default function ChatPage() {
       )}
 
       {/* ==================================================
-          MAIN CONTENT
+          MAIN
           ================================================== */}
 
       <div className="flex flex-1 min-h-0">
@@ -514,22 +577,33 @@ export default function ChatPage() {
           {groups.map((g) => (
             <button
               key={g._id}
-              onClick={() => openGroup(g._id)}
+              onClick={() =>
+                openGroup(g._id)
+              }
               className={`w-full text-left px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3 transition ${
-                g._id === activeGroupId
+                g._id ===
+                activeGroupId
                   ? "bg-slate-100"
                   : "hover:bg-slate-50"
               }`}
             >
+
               <span className="truncate text-sm font-medium text-slate-700">
                 {g.name}
               </span>
 
-              {unreadCounts[g._id] > 0 && (
+              {unreadCounts[
+                g._id
+              ] > 0 && (
                 <span className="ml-2 shrink-0 min-w-6 h-6 rounded-full bg-slate-800 text-white text-xs flex items-center justify-center px-2">
-                  {unreadCounts[g._id]}
+                  {
+                    unreadCounts[
+                      g._id
+                    ]
+                  }
                 </span>
               )}
+
             </button>
           ))}
 
@@ -538,6 +612,7 @@ export default function ChatPage() {
               No groups yet.
             </p>
           )}
+
         </aside>
 
         {/* ==================================================
@@ -554,32 +629,40 @@ export default function ChatPage() {
             </div>
 
             <div className="px-2 pb-4">
+
               {groups.map((g) => (
                 <button
                   key={g._id}
                   type="button"
-                  onClick={() => openGroup(g._id)}
+                  onClick={() =>
+                    openGroup(g._id)
+                  }
                   className="w-full flex items-center gap-3 px-3 py-3.5 rounded-xl text-left hover:bg-white active:bg-white transition"
                 >
 
-                  {/* Group avatar */}
                   <div className="h-12 w-12 shrink-0 rounded-full bg-slate-800 text-white flex items-center justify-center font-semibold text-lg">
                     {(g.name || "G")
                       .charAt(0)
                       .toUpperCase()}
                   </div>
 
-                  {/* Group details */}
                   <div className="min-w-0 flex-1">
+
                     <div className="flex items-center justify-between gap-2">
 
                       <span className="truncate font-semibold text-slate-800">
                         {g.name}
                       </span>
 
-                      {unreadCounts[g._id] > 0 && (
+                      {unreadCounts[
+                        g._id
+                      ] > 0 && (
                         <span className="shrink-0 min-w-6 h-6 rounded-full bg-slate-800 text-white text-xs flex items-center justify-center px-2">
-                          {unreadCounts[g._id]}
+                          {
+                            unreadCounts[
+                              g._id
+                            ]
+                          }
                         </span>
                       )}
 
@@ -588,6 +671,7 @@ export default function ChatPage() {
                     <p className="mt-0.5 text-xs text-slate-400">
                       Tap to open chat
                     </p>
+
                   </div>
 
                   <span className="text-slate-300 text-xl">
@@ -599,15 +683,19 @@ export default function ChatPage() {
 
               {groups.length === 0 && (
                 <div className="px-4 py-12 text-center">
+
                   <div className="mx-auto mb-3 h-14 w-14 rounded-full bg-white flex items-center justify-center text-slate-300 text-2xl">
                     #
                   </div>
 
                   <p className="text-sm text-slate-400">
-                    You are not a member of any group yet.
+                    You are not a member
+                    of any group yet.
                   </p>
+
                 </div>
               )}
+
             </div>
           </div>
         )}
@@ -629,9 +717,9 @@ export default function ChatPage() {
               setIsDraggingOver(true);
             }
           }}
-          onDragLeave={() => {
-            setIsDraggingOver(false);
-          }}
+          onDragLeave={() =>
+            setIsDraggingOver(false)
+          }
           onDrop={
             activeGroupId
               ? handleDrop
@@ -657,6 +745,7 @@ export default function ChatPage() {
                   ================================================== */}
 
               <div className="hidden sm:block shrink-0 border-b border-slate-200 px-4 py-3 bg-white">
+
                 <h2 className="font-semibold text-slate-800">
                   {activeGroup?.name}
                 </h2>
@@ -664,54 +753,73 @@ export default function ChatPage() {
                 <p className="text-xs text-slate-400 mt-0.5">
                   Group chat
                 </p>
+
               </div>
 
               {/* ==================================================
-                  MESSAGES
+                  MESSAGE LIST
                   ================================================== */}
 
               <div
                 ref={messageListRef}
                 onScroll={handleScroll}
-                className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 sm:px-4 py-3 sm:py-4 space-y-2 bg-slate-50"
+                className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 sm:px-4 py-3 sm:py-4 bg-slate-50"
               >
-                {messages.length === 0 && (
-                  <div className="h-full flex items-center justify-center">
-                    <div className="text-center text-slate-400">
-                      <div className="mx-auto mb-2 h-12 w-12 rounded-full bg-white flex items-center justify-center text-slate-300">
-                        #
+
+                {/* IMPORTANT:
+                    This makes messages sit at the bottom
+                    when there are only a few messages,
+                    just like WhatsApp. */}
+
+                <div className="flex min-h-full flex-col justify-end gap-2">
+
+                  {messages.length === 0 && (
+                    <div className="flex-1 flex items-center justify-center">
+
+                      <div className="text-center text-slate-400">
+
+                        <div className="mx-auto mb-2 h-12 w-12 rounded-full bg-white flex items-center justify-center text-slate-300">
+                          #
+                        </div>
+
+                        <p className="text-sm">
+                          No messages yet.
+                        </p>
+
+                        <p className="text-xs mt-1">
+                          Start the conversation.
+                        </p>
+
                       </div>
 
-                      <p className="text-sm">
-                        No messages yet.
-                      </p>
-
-                      <p className="text-xs mt-1">
-                        Start the conversation.
-                      </p>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {messages.map((m) => (
-                  <MessageBubble
-                    key={m.id}
-                    message={m}
-                    isOwn={
-                      m.sender.id === user.id
-                    }
-                  />
-                ))}
+                  {messages.map((m) => (
+                    <MessageBubble
+                      key={m.id}
+                      message={m}
+                      isOwn={
+                        m.sender.id ===
+                        user.id
+                      }
+                    />
+                  ))}
+
+                </div>
               </div>
 
               {/* ==================================================
-                  TYPING INDICATOR
+                  TYPING
                   ================================================== */}
 
               {typingNames.length > 0 && (
                 <div className="shrink-0 px-4 py-1.5 text-xs text-slate-400 italic bg-slate-50">
-                  {typingNames.join(", ")}{" "}
-                  {typingNames.length === 1
+                  {typingNames.join(
+                    ", "
+                  )}{" "}
+                  {typingNames.length ===
+                  1
                     ? "is"
                     : "are"}{" "}
                   typing...
@@ -736,20 +844,25 @@ export default function ChatPage() {
                     />
 
                     <div className="flex-1 min-w-0 text-sm">
+
                       {imageError ? (
                         <span className="text-red-600">
                           {imageError}
                         </span>
                       ) : (
                         <span className="text-slate-500">
-                          Ready to send this image?
+                          Ready to send this
+                          image?
                         </span>
                       )}
+
                     </div>
 
                     <button
                       type="button"
-                      onClick={cancelImagePreview}
+                      onClick={
+                        cancelImagePreview
+                      }
                       className="shrink-0 px-3 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50 active:bg-slate-100"
                     >
                       Cancel
@@ -757,10 +870,14 @@ export default function ChatPage() {
 
                     <button
                       type="button"
-                      onClick={confirmSendImage}
+                      onClick={
+                        confirmSendImage
+                      }
                       disabled={
                         sendingImage ||
-                        Boolean(imageError)
+                        Boolean(
+                          imageError
+                        )
                       }
                       className="shrink-0 px-3 py-2 text-sm rounded-lg bg-slate-800 text-white hover:bg-slate-700 active:bg-slate-900 disabled:opacity-50"
                     >
@@ -788,11 +905,13 @@ export default function ChatPage() {
                     type="file"
                     ref={fileInputRef}
                     accept="image/jpeg,image/png,image/webp,image/gif"
-                    onChange={handleFileInputChange}
+                    onChange={
+                      handleFileInputChange
+                    }
                     className="hidden"
                   />
 
-                  {/* Attachment */}
+                  {/* Attach */}
                   <button
                     type="button"
                     onClick={() =>
@@ -807,7 +926,7 @@ export default function ChatPage() {
                     </span>
                   </button>
 
-                  {/* Text input */}
+                  {/* Message input */}
                   <input
                     ref={messageInputRef}
                     value={draft}
@@ -816,7 +935,9 @@ export default function ChatPage() {
                         e.target.value
                       )
                     }
-                    onPaste={handleComposerPaste}
+                    onPaste={
+                      handleComposerPaste
+                    }
                     placeholder="Type a message..."
                     autoComplete="off"
                     enterKeyHint="send"
