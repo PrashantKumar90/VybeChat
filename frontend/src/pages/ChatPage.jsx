@@ -21,50 +21,41 @@ export default function ChatPage() {
   const [imageError, setImageError] = useState("");
   const [sendingImage, setSendingImage] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("vybechat-theme") || "light";
+    } catch {
+      return "light";
+    }
+  });
 
   const messageListRef = useRef(null);
   const socketRef = useRef(null);
   const fileInputRef = useRef(null);
+  const messageInputRef = useRef(null);
   const activeGroupIdRef = useRef(null);
-  const openGroupRequestRef = useRef(0);
-  const loadingOlderRef = useRef(false);
+
+  // --------------------------------------------------
+  // Initial load
+  // --------------------------------------------------
 
   useEffect(() => {
-    let mounted = true;
+    groupService.listGroups().then(({ data }) => {
+      setGroups(data.groups || []);
+    });
 
-    async function loadGroups() {
-      try {
-        const { data } = await groupService.listGroups();
-        if (mounted) setGroups(data.groups || []);
-      } catch (err) {
-        console.error("Failed to load groups:", err);
-      }
-    }
-
-    loadGroups();
     refreshUnreadCounts();
 
     const socket = getSocket();
     socketRef.current = socket;
-
-    socket.off("message:new", handleIncomingMessage);
-    socket.off("typing:update", handleTypingUpdate);
+    socket.connect();
 
     socket.on("message:new", handleIncomingMessage);
     socket.on("typing:update", handleTypingUpdate);
 
-    if (!socket.connected) socket.connect();
-
     return () => {
-      mounted = false;
       socket.off("message:new", handleIncomingMessage);
       socket.off("typing:update", handleTypingUpdate);
-
-      if (activeGroupIdRef.current) {
-        socket.emit("group:leave", {
-          groupId: activeGroupIdRef.current,
-        });
-      }
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,89 +65,112 @@ export default function ChatPage() {
     activeGroupIdRef.current = activeGroupId;
   }, [activeGroupId]);
 
-  async function refreshUnreadCounts() {
+  useEffect(() => {
     try {
-      const { data } = await groupService.listUnreadCounts();
+      localStorage.setItem("vybechat-theme", theme);
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(typingDebounceTimer);
+    };
+  }, []);
+
+  // --------------------------------------------------
+  // Unread counts
+  // --------------------------------------------------
+
+  function refreshUnreadCounts() {
+    groupService.listUnreadCounts().then(({ data }) => {
       const map = {};
 
-      (data.counts || []).forEach((item) => {
-        map[item.groupId] = item.unreadCount;
+      (data.counts || []).forEach((c) => {
+        map[c.groupId] = c.unreadCount;
       });
 
       setUnreadCounts(map);
-    } catch (err) {
-      console.error("Failed to load unread counts:", err);
-    }
+    });
   }
 
-  function getMessageId(message) {
-    return message?.id || message?._id || null;
-  }
-
-  function mergeMessages(existing, incoming) {
-    const result = [];
-    const seenIds = new Set();
-
-    for (const message of [...existing, ...incoming]) {
-      const id = getMessageId(message);
-
-      if (id) {
-        const normalizedId = String(id);
-
-        if (seenIds.has(normalizedId)) continue;
-
-        seenIds.add(normalizedId);
-      }
-
-      result.push(message);
-    }
-
-    return result;
-  }
+  // --------------------------------------------------
+  // Incoming messages
+  // --------------------------------------------------
 
   function handleIncomingMessage(payload) {
-    const currentGroupId = activeGroupIdRef.current;
-
-    if (payload?.groupId !== currentGroupId) {
+    if (payload.groupId !== activeGroupIdRef.current) {
       refreshUnreadCounts();
       return;
     }
 
-    setMessages((prev) => mergeMessages(prev, [payload]));
+    setMessages((prev) => [...prev, payload]);
+
+    // Always move to the newest message for the active chat.
     scrollToBottom();
   }
 
-  function handleTypingUpdate({
-    groupId,
-    userId,
-    displayName,
-    isTyping,
-  }) {
+  // --------------------------------------------------
+  // Typing
+  // --------------------------------------------------
+
+  function handleTypingUpdate(payload = {}) {
+    const {
+      groupId,
+      userId,
+      displayName,
+      isTyping,
+      user,
+    } = payload;
+
     if (groupId !== activeGroupIdRef.current) return;
+
+    const senderId =
+      userId ||
+      user?.id ||
+      user?._id ||
+      null;
+
+    const senderName =
+      displayName ||
+      user?.displayName ||
+      "Someone";
+
+    // Never show our own typing state.
+    if (
+      senderId &&
+      user?.id &&
+      String(senderId) === String(user.id)
+    ) {
+      return;
+    }
 
     setTypingUsers((prev) => {
       const next = { ...prev };
 
-      if (isTyping) next[userId] = displayName;
-      else delete next[userId];
+      if (isTyping && senderId) {
+        next[String(senderId)] = senderName;
+      } else if (senderId) {
+        delete next[String(senderId)];
+      }
 
       return next;
     });
   }
 
+  // --------------------------------------------------
+  // Open group
+  // --------------------------------------------------
+
   async function openGroup(groupId) {
-    if (!socketRef.current) return;
-
-    const previousGroupId = activeGroupIdRef.current;
-
-    if (previousGroupId && previousGroupId !== groupId) {
+    if (activeGroupId && socketRef.current) {
       socketRef.current.emit("group:leave", {
-        groupId: previousGroupId,
+        groupId: activeGroupId,
       });
     }
 
-    activeGroupIdRef.current = groupId;
-
+    clearTimeout(typingDebounceTimer);
     setActiveGroupId(groupId);
     setMessages([]);
     setTypingUsers({});
@@ -164,8 +178,6 @@ export default function ChatPage() {
     setDraft("");
 
     cancelImagePreview();
-
-    const requestId = ++openGroupRequestRef.current;
 
     socketRef.current.emit(
       "group:join",
@@ -180,59 +192,39 @@ export default function ChatPage() {
       }
     );
 
-    try {
-      const { data } = await groupService.getMessages(groupId);
+    const { data } =
+      await groupService.getMessages(groupId);
 
-      if (
-        requestId !== openGroupRequestRef.current ||
-        activeGroupIdRef.current !== groupId
-      ) {
-        return;
-      }
+    setMessages(data.messages || []);
+    setNextCursor(data.nextCursor);
 
-      setMessages(
-        mergeMessages([], data.messages || [])
-      );
+    await groupService.markRead(groupId);
 
-      setNextCursor(data.nextCursor || null);
+    setUnreadCounts((prev) => ({
+      ...prev,
+      [groupId]: 0,
+    }));
 
-      await groupService.markRead(groupId);
-
-      if (
-        requestId !== openGroupRequestRef.current ||
-        activeGroupIdRef.current !== groupId
-      ) {
-        return;
-      }
-
-      setUnreadCounts((prev) => ({
-        ...prev,
-        [groupId]: 0,
-      }));
-
+    // Wait for messages to render, then go to bottom.
+    requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (activeGroupIdRef.current === groupId) {
-            scrollToBottom();
-          }
-        });
+        scrollToBottom();
       });
-    } catch (err) {
-      console.error("Failed to load group messages:", err);
-    }
+    });
   }
 
-  function closeMobileChat() {
-    const currentGroupId = activeGroupIdRef.current;
+  // --------------------------------------------------
+  // Mobile back
+  // --------------------------------------------------
 
-    if (currentGroupId && socketRef.current) {
+  function backToGroups() {
+    if (activeGroupId && socketRef.current) {
       socketRef.current.emit("group:leave", {
-        groupId: currentGroupId,
+        groupId: activeGroupId,
       });
     }
 
-    activeGroupIdRef.current = null;
-
+    clearTimeout(typingDebounceTimer);
     setActiveGroupId(null);
     setMessages([]);
     setTypingUsers({});
@@ -242,56 +234,46 @@ export default function ChatPage() {
     cancelImagePreview();
   }
 
-  async function loadOlderMessages() {
-    if (
-      loadingOlderRef.current ||
-      !nextCursor ||
-      !activeGroupId
-    ) {
-      return;
-    }
+  // --------------------------------------------------
+  // Load older messages
+  // --------------------------------------------------
 
-    const groupIdAtRequest = activeGroupId;
+  async function loadOlderMessages() {
+    if (!nextCursor || !activeGroupId) return;
+
     const container = messageListRef.current;
 
-    if (!container) return;
+    const previousScrollHeight =
+      container?.scrollHeight || 0;
 
-    loadingOlderRef.current = true;
+    const previousScrollTop =
+      container?.scrollTop || 0;
 
-    const previousScrollHeight = container.scrollHeight;
-    const previousScrollTop = container.scrollTop;
-
-    try {
-      const { data } = await groupService.getMessages(
-        groupIdAtRequest,
+    const { data } =
+      await groupService.getMessages(
+        activeGroupId,
         nextCursor
       );
 
-      if (activeGroupIdRef.current !== groupIdAtRequest) {
-        return;
-      }
+    setMessages((prev) => [
+      ...(data.messages || []),
+      ...prev,
+    ]);
 
-      setMessages((prev) =>
-        mergeMessages(data.messages || [], prev)
-      );
+    setNextCursor(data.nextCursor);
 
-      setNextCursor(data.nextCursor || null);
+    // Preserve the user's position after adding older messages.
+    requestAnimationFrame(() => {
+      if (!container) return;
 
-      requestAnimationFrame(() => {
-        const currentContainer = messageListRef.current;
+      const newScrollHeight =
+        container.scrollHeight;
 
-        if (!currentContainer) return;
-
-        currentContainer.scrollTop =
-          currentContainer.scrollHeight -
-          previousScrollHeight +
-          previousScrollTop;
-      });
-    } catch (err) {
-      console.error("Failed to load older messages:", err);
-    } finally {
-      loadingOlderRef.current = false;
-    }
+      container.scrollTop =
+        newScrollHeight -
+        previousScrollHeight +
+        previousScrollTop;
+    });
   }
 
   function handleScroll(e) {
@@ -300,6 +282,10 @@ export default function ChatPage() {
     }
   }
 
+  // --------------------------------------------------
+  // Scroll to latest message
+  // --------------------------------------------------
+
   function scrollToBottom() {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -307,22 +293,34 @@ export default function ChatPage() {
 
         if (!element) return;
 
-        element.scrollTop = element.scrollHeight;
+        element.scrollTop =
+          element.scrollHeight;
       });
     });
   }
+
+  // --------------------------------------------------
+  // Send text message
+  // --------------------------------------------------
 
   function sendMessage(e) {
     e.preventDefault();
 
     const text = draft.trim();
-    const groupId = activeGroupIdRef.current;
 
-    if (!text || !groupId || !socketRef.current) return;
+    if (!text || !activeGroupId) {
+      messageInputRef.current?.focus();
+      return;
+    }
+
+    const groupId = activeGroupId;
 
     socketRef.current.emit(
       "message:send",
-      { groupId, text },
+      {
+        groupId,
+        text,
+      },
       (ack) => {
         if (!ack?.ok) {
           console.error(
@@ -334,41 +332,67 @@ export default function ChatPage() {
     );
 
     setDraft("");
-
-    socketRef.current.emit("typing:stop", {
-      groupId,
-    });
-
-    // Do not force focus here. The mobile browser controls
-    // keyboard visibility naturally.
-  }
-
-  const handleDraftChange = useCallback((value) => {
-    setDraft(value);
-
-    const groupId = activeGroupIdRef.current;
-
-    if (!groupId || !socketRef.current) return;
-
-    socketRef.current.emit("typing:start", {
-      groupId,
-    });
-
     clearTimeout(typingDebounceTimer);
 
-    typingDebounceTimer = setTimeout(() => {
-      if (!socketRef.current) return;
-
-      socketRef.current.emit("typing:stop", {
+    socketRef.current.emit(
+      "typing:stop",
+      {
         groupId,
-      });
-    }, 2000);
-  }, []);
+      }
+    );
+
+    /*
+     * Keep input focused after sending.
+     * This prevents our code from closing
+     * the mobile keyboard.
+     */
+    requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
+  }
+
+  // --------------------------------------------------
+  // Typing input
+  // --------------------------------------------------
+
+  const handleDraftChange = useCallback(
+    (value) => {
+      setDraft(value);
+
+      const groupId = activeGroupIdRef.current;
+      const socket = socketRef.current;
+
+      if (!groupId || !socket) return;
+
+      clearTimeout(typingDebounceTimer);
+
+      if (!value.trim()) {
+        socket.emit("typing:stop", { groupId });
+        return;
+      }
+
+      socket.emit("typing:start", { groupId });
+
+      typingDebounceTimer = setTimeout(() => {
+        if (activeGroupIdRef.current !== groupId) return;
+
+        socketRef.current?.emit("typing:stop", {
+          groupId,
+        });
+      }, 2000);
+    },
+    []
+  );
+
+  // --------------------------------------------------
+  // Image sharing
+  // --------------------------------------------------
 
   function stageImageFile(file) {
     if (!file) return;
 
-    const error = validateImageFile(file);
+    const error =
+      validateImageFile(file);
 
     if (error) {
       setImageError(error);
@@ -377,42 +401,46 @@ export default function ChatPage() {
 
     setImageError("");
 
-    if (pendingImage?.previewUrl) {
-      URL.revokeObjectURL(pendingImage.previewUrl);
-    }
-
     setPendingImage({
       file,
-      previewUrl: URL.createObjectURL(file),
+      previewUrl:
+        URL.createObjectURL(file),
     });
   }
 
   function handleFileInputChange(e) {
-    stageImageFile(e.target.files?.[0]);
+    stageImageFile(
+      e.target.files?.[0]
+    );
+
     e.target.value = "";
   }
 
   function handleComposerPaste(e) {
     const item = Array.from(
       e.clipboardData?.items || []
-    ).find((item) =>
-      item.type.startsWith("image/")
+    ).find((i) =>
+      i.type.startsWith("image/")
     );
 
-    if (!item) return;
+    if (item) {
+      e.preventDefault();
 
-    e.preventDefault();
-    stageImageFile(item.getAsFile());
+      stageImageFile(
+        item.getAsFile()
+      );
+    }
   }
 
   function handleDrop(e) {
     e.preventDefault();
+
     setIsDraggingOver(false);
 
     const file = Array.from(
       e.dataTransfer.files || []
-    ).find((file) =>
-      file.type.startsWith("image/")
+    ).find((f) =>
+      f.type.startsWith("image/")
     );
 
     stageImageFile(file);
@@ -420,7 +448,9 @@ export default function ChatPage() {
 
   function cancelImagePreview() {
     if (pendingImage?.previewUrl) {
-      URL.revokeObjectURL(pendingImage.previewUrl);
+      URL.revokeObjectURL(
+        pendingImage.previewUrl
+      );
     }
 
     setPendingImage(null);
@@ -428,20 +458,27 @@ export default function ChatPage() {
   }
 
   async function confirmSendImage() {
-    const groupId = activeGroupIdRef.current;
-
-    if (!pendingImage || !groupId) return;
+    if (
+      !pendingImage ||
+      !activeGroupId
+    ) {
+      return;
+    }
 
     setSendingImage(true);
 
     try {
       await groupService.sendImage(
-        groupId,
+        activeGroupId,
         pendingImage.file
       );
 
       cancelImagePreview();
-      scrollToBottom();
+
+      requestAnimationFrame(() => {
+        messageInputRef.current?.focus();
+        scrollToBottom();
+      });
     } catch (err) {
       setImageError(
         err.response?.data?.error ||
@@ -452,70 +489,232 @@ export default function ChatPage() {
     }
   }
 
-  const activeGroup = groups.find(
-    (group) => group._id === activeGroupId
-  );
+  // --------------------------------------------------
+  // Derived values
+  // --------------------------------------------------
 
-  const typingNames = Object.values(typingUsers);
+  const activeGroup =
+    groups.find(
+      (g) =>
+        g._id === activeGroupId
+    );
+
+  const typingNames =
+    Object.values(typingUsers);
+
+  // --------------------------------------------------
+  // UI
+  // --------------------------------------------------
+
+  const isDark = theme === "dark";
+
+  const pageClass = isDark
+    ? "h-[100dvh] flex flex-col overflow-hidden bg-[#0b141a] text-slate-100"
+    : "h-[100dvh] flex flex-col overflow-hidden bg-[#f7f9fa] text-slate-800";
+
+  const panelClass = isDark
+    ? "bg-[#111b21] border-slate-700"
+    : "bg-white border-slate-200";
+
+  const subtleTextClass = isDark
+    ? "text-slate-400"
+    : "text-slate-400";
+
+  const chatBackgroundStyle = {
+    backgroundColor: isDark ? "#0b141a" : "#efeae2",
+    backgroundImage: isDark
+      ? "radial-gradient(circle at 20% 20%, rgba(42,57,66,0.22) 0 1px, transparent 1px), radial-gradient(circle at 80% 70%, rgba(42,57,66,0.18) 0 1px, transparent 1px)"
+      : "radial-gradient(circle at 20% 20%, rgba(255,255,255,0.55) 0 1px, transparent 1px), radial-gradient(circle at 80% 70%, rgba(160,140,120,0.12) 0 1px, transparent 1px)",
+    backgroundSize: "28px 28px, 34px 34px",
+  };
+
+  function toggleTheme() {
+    setTheme((current) =>
+      current === "dark" ? "light" : "dark"
+    );
+  }
 
   return (
-    <div className="h-[100dvh] flex flex-col overflow-hidden bg-white">
-      <header className="shrink-0 border-b border-slate-200 px-4 py-3 flex items-center justify-between bg-white">
-        <h1 className="font-semibold text-slate-800">
-          Group Chat
-        </h1>
+    <div className={pageClass}>
 
-        <div className="flex items-center gap-3 text-sm">
-          <span className="hidden sm:inline text-slate-500">
-            {user.displayName || user.email}
-          </span>
+      {/* ==================================================
+          GROUP LIST HEADER
+          ================================================== */}
 
-          {user.role === "SUPER_ADMIN" && (
-            <Link
-              to="/admin/users"
-              className="text-slate-500 underline"
-            >
-              Admin
-            </Link>
-          )}
+      {!activeGroupId && (
+        <header className={`shrink-0 border-b px-4 py-3 ${panelClass}`}>
 
-          <Link
-            to="/notification-settings"
-            className="text-slate-500 underline"
-          >
-            Notifications
-          </Link>
+          <div className="flex items-center justify-between">
 
-          <button
-            onClick={logout}
-            className="text-slate-500 underline"
-          >
-            Log out
-          </button>
-        </div>
-      </header>
+            <div>
+              <h1 className="text-lg font-bold text-slate-800">
+                VYBE
+              </h1>
 
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        <aside className="hidden sm:block w-64 shrink-0 border-r border-slate-200 bg-white overflow-y-auto">
-          {groups.map((group) => (
-            <button
-              key={group._id}
-              onClick={() => openGroup(group._id)}
-              className={`w-full text-left px-4 py-3 border-b border-slate-100 flex justify-between items-center hover:bg-slate-50 ${
-                group._id === activeGroupId
-                  ? "bg-slate-100"
-                  : ""
-              }`}
-            >
-              <span className="truncate">
-                {group.name}
+              <p className="text-xs text-slate-400">
+                Your Groups
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 text-sm">
+
+              <span className="hidden sm:inline text-slate-500">
+                {user.displayName ||
+                  user.email}
               </span>
 
-              {unreadCounts[group._id] > 0 && (
-                <span className="ml-2 shrink-0 rounded-full bg-slate-800 text-white text-xs px-2 py-0.5">
-                  {unreadCounts[group._id]}
+              {user.role ===
+                "SUPER_ADMIN" && (
+                <Link
+                  to="/admin/users"
+                  className="hidden sm:inline text-slate-500 hover:text-slate-800"
+                >
+                  Admin
+                </Link>
+              )}
+
+              <Link
+                to="/notification-settings"
+                className="hidden sm:inline text-slate-500 hover:text-slate-800"
+              >
+                Notifications
+              </Link>
+
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className={`h-9 w-9 rounded-full flex items-center justify-center transition ${
+                  isDark
+                    ? "bg-slate-800 text-amber-300 hover:bg-slate-700"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+                title={
+                  isDark
+                    ? "Switch to light theme"
+                    : "Switch to dark theme"
+                }
+                aria-label={
+                  isDark
+                    ? "Switch to light theme"
+                    : "Switch to dark theme"
+                }
+              >
+                {isDark ? "☀" : "☾"}
+              </button>
+
+              <button
+                onClick={logout}
+                className={`${isDark ? "text-slate-300 hover:text-white" : "text-slate-500 hover:text-slate-800"}`}
+              >
+                Log out
+              </button>
+
+            </div>
+
+          </div>
+        </header>
+      )}
+
+      {/* ==================================================
+          MOBILE CHAT HEADER
+          ================================================== */}
+
+      {activeGroupId && (
+        <header className={`sm:hidden shrink-0 border-b px-3 py-2 ${panelClass}`}>
+
+          <div className="flex items-center gap-3">
+
+            <button
+              type="button"
+              onClick={backToGroups}
+              className={`h-10 w-10 shrink-0 rounded-full flex items-center justify-center ${
+                isDark
+                  ? "text-slate-200 hover:bg-slate-800 active:bg-slate-700"
+                  : "text-slate-700 hover:bg-slate-100 active:bg-slate-200"
+              }`}
+              aria-label="Back to groups"
+            >
+              <span className="text-3xl leading-none">
+                ‹
+              </span>
+            </button>
+
+            <div className="min-w-0 flex-1">
+
+              <h1 className={`truncate font-semibold ${isDark ? "text-slate-100" : "text-slate-800"}`}>
+                {activeGroup?.name ||
+                  "Chat"}
+              </h1>
+
+              <p className={`truncate text-xs ${subtleTextClass}`}>
+                {typingNames.length > 0
+                  ? `${typingNames.join(", ")} ${
+                      typingNames.length === 1
+                        ? "is"
+                        : "are"
+                    } typing...`
+                  : "Group chat"}
+              </p>
+
+            </div>
+
+          </div>
+        </header>
+      )}
+
+      {/* ==================================================
+          MAIN
+          ================================================== */}
+
+      <div className="flex flex-1 min-h-0">
+
+        {/* ==================================================
+            DESKTOP GROUP SIDEBAR
+            ================================================== */}
+
+        <aside className={`hidden sm:block w-64 shrink-0 border-r overflow-y-auto ${panelClass}`}>
+
+          <div className={`sticky top-0 border-b px-4 py-3 ${panelClass}`}>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Groups
+            </p>
+          </div>
+
+          {groups.map((g) => (
+            <button
+              key={g._id}
+              onClick={() =>
+                openGroup(g._id)
+              }
+              className={`w-full text-left px-4 py-3 border-b flex items-center justify-between gap-3 transition ${
+                isDark ? "border-slate-800" : "border-slate-100"
+              } ${
+                g._id === activeGroupId
+                  ? isDark
+                    ? "bg-slate-800"
+                    : "bg-slate-100"
+                  : isDark
+                    ? "hover:bg-slate-800/70"
+                    : "hover:bg-slate-50"
+              }`}
+            >
+
+              <span className={`truncate text-sm font-medium ${isDark ? "text-slate-200" : "text-slate-700"}`}>
+                {g.name}
+              </span>
+
+              {unreadCounts[
+                g._id
+              ] > 0 && (
+                <span className="ml-2 shrink-0 min-w-6 h-6 rounded-full bg-slate-800 text-white text-xs flex items-center justify-center px-2">
+                  {
+                    unreadCounts[
+                      g._id
+                    ]
+                  }
                 </span>
               )}
+
             </button>
           ))}
 
@@ -524,58 +723,112 @@ export default function ChatPage() {
               No groups yet.
             </p>
           )}
+
         </aside>
 
+        {/* ==================================================
+            MOBILE GROUP LIST
+            ================================================== */}
+
         {!activeGroupId && (
-          <div className="sm:hidden flex-1 min-h-0 overflow-y-auto bg-white">
-            <div className="px-4 py-3 border-b border-slate-200">
-              <h2 className="font-semibold text-slate-800">
+          <div className={`sm:hidden flex-1 overflow-y-auto ${isDark ? "bg-[#0b141a]" : "bg-[#f7f9fa]"}`}>
+
+            <div className="px-3 pt-3 pb-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                 Your Groups
-              </h2>
+              </p>
             </div>
 
-            {groups.map((group) => (
-              <button
-                key={group._id}
-                onClick={() => openGroup(group._id)}
-                className="w-full flex items-center gap-3 px-4 py-3 border-b border-slate-100 active:bg-slate-100"
-              >
-                <div className="h-11 w-11 shrink-0 rounded-full bg-slate-800 text-white flex items-center justify-center font-semibold">
-                  {group.name
-                    ?.charAt(0)
-                    ?.toUpperCase() || "G"}
-                </div>
+            <div className="px-2 pb-4">
 
-                <div className="min-w-0 flex-1 text-left">
-                  <p className="font-medium text-slate-800 truncate">
-                    {group.name}
-                  </p>
+              {groups.map((g) => (
+                <button
+                  key={g._id}
+                  type="button"
+                  onClick={() =>
+                    openGroup(g._id)
+                  }
+                  className={`w-full flex items-center gap-3 px-3 py-3.5 rounded-xl text-left transition ${
+                    isDark
+                      ? "hover:bg-[#111b21] active:bg-[#111b21]"
+                      : "hover:bg-white active:bg-white"
+                  }`}
+                >
 
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Tap to open chat
-                  </p>
-                </div>
+                  <div className={`h-12 w-12 shrink-0 rounded-full flex items-center justify-center font-semibold text-lg ${
+                    isDark
+                      ? "bg-slate-700 text-slate-100"
+                      : "bg-slate-800 text-white"
+                  }`}>
+                    {(g.name || "G")
+                      .charAt(0)
+                      .toUpperCase()}
+                  </div>
 
-                {unreadCounts[group._id] > 0 && (
-                  <span className="min-w-6 h-6 px-2 rounded-full bg-slate-800 text-white text-xs flex items-center justify-center">
-                    {unreadCounts[group._id]}
+                  <div className="min-w-0 flex-1">
+
+                    <div className="flex items-center justify-between gap-2">
+
+                      <span className={`truncate font-semibold ${isDark ? "text-slate-100" : "text-slate-800"}`}>
+                        {g.name}
+                      </span>
+
+                      {unreadCounts[
+                        g._id
+                      ] > 0 && (
+                        <span className="shrink-0 min-w-6 h-6 rounded-full bg-slate-800 text-white text-xs flex items-center justify-center px-2">
+                          {
+                            unreadCounts[
+                              g._id
+                            ]
+                          }
+                        </span>
+                      )}
+
+                    </div>
+
+                    <p className="mt-0.5 text-xs text-slate-400">
+                      Tap to open chat
+                    </p>
+
+                  </div>
+
+                  <span className={`text-xl ${isDark ? "text-slate-600" : "text-slate-300"}`}>
+                    ›
                   </span>
-                )}
-              </button>
-            ))}
 
-            {groups.length === 0 && (
-              <div className="p-6 text-center text-sm text-slate-400">
-                No groups yet.
-              </div>
-            )}
+                </button>
+              ))}
+
+              {groups.length === 0 && (
+                <div className="px-4 py-12 text-center">
+
+                  <div className="mx-auto mb-3 h-14 w-14 rounded-full bg-white flex items-center justify-center text-slate-300 text-2xl">
+                    #
+                  </div>
+
+                  <p className="text-sm text-slate-400">
+                    You are not a member
+                    of any group yet.
+                  </p>
+
+                </div>
+              )}
+
+            </div>
           </div>
         )}
 
+        {/* ==================================================
+            CHAT AREA
+            ================================================== */}
+
         <main
-          className={`${
-            activeGroupId ? "flex" : "hidden sm:flex"
-          } flex-1 min-w-0 min-h-0 flex-col relative overflow-hidden`}
+          className={`flex-1 min-w-0 flex flex-col min-h-0 relative ${
+            !activeGroupId
+              ? "hidden sm:flex"
+              : "flex"
+          }`}
           onDragOver={(e) => {
             e.preventDefault();
 
@@ -583,13 +836,19 @@ export default function ChatPage() {
               setIsDraggingOver(true);
             }
           }}
-          onDragLeave={() => setIsDraggingOver(false)}
+          onDragLeave={() =>
+            setIsDraggingOver(false)
+          }
           onDrop={
-            activeGroupId ? handleDrop : undefined
+            activeGroupId
+              ? handleDrop
+              : undefined
           }
         >
+
+          {/* Drag overlay */}
           {isDraggingOver && (
-            <div className="absolute inset-0 z-50 bg-slate-800/70 flex items-center justify-center text-white text-lg font-medium pointer-events-none">
+            <div className="absolute inset-0 z-50 bg-slate-800/80 flex items-center justify-center text-white text-lg font-medium pointer-events-none">
               Drop image to share
             </div>
           )}
@@ -600,144 +859,273 @@ export default function ChatPage() {
             </div>
           ) : (
             <>
-              <div className="shrink-0 border-b border-slate-200 px-3 sm:px-4 py-3 bg-white flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={closeMobileChat}
-                  className="sm:hidden h-9 w-9 rounded-full flex items-center justify-center text-slate-700 hover:bg-slate-100 active:bg-slate-200"
-                  aria-label="Back to groups"
-                >
-                  ←
-                </button>
+              {/* ==================================================
+                  DESKTOP CHAT HEADER
+                  ================================================== */}
 
-                <div className="sm:hidden h-9 w-9 shrink-0 rounded-full bg-slate-800 text-white flex items-center justify-center text-sm font-semibold">
-                  {activeGroup?.name
-                    ?.charAt(0)
-                    ?.toUpperCase() || "G"}
-                </div>
+              <div className={`hidden sm:block shrink-0 border-b px-4 py-3 ${panelClass}`}>
 
-                <div className="min-w-0">
-                  <h2 className="font-medium text-slate-800 truncate">
-                    {activeGroup?.name}
-                  </h2>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className={`truncate font-semibold ${isDark ? "text-slate-100" : "text-slate-800"}`}>
+                      {activeGroup?.name}
+                    </h2>
 
-                  <p className="text-xs text-slate-400">
-                    {typingNames.length > 0
-                      ? `${typingNames.join(", ")} ${
-                          typingNames.length === 1
-                            ? "is"
-                            : "are"
-                        } typing...`
-                      : "Group chat"}
-                  </p>
-                </div>
-              </div>
-
-              <div
-                ref={messageListRef}
-                onScroll={handleScroll}
-                className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 sm:px-4 py-3 sm:py-4 bg-slate-50"
-              >
-                <div className="flex min-h-full flex-col justify-end gap-2">
-                  {messages.map((message) => (
-                    <MessageBubble
-                      key={
-                        getMessageId(message) ||
-                        `${message.sender?.id || "unknown"}-${message.createdAt}-${message.text || message.image?.url || ""}`
-                      }
-                      message={message}
-                      isOwn={
-                        message.sender?.id === user.id
-                      }
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {pendingImage && (
-                <div className="shrink-0 border-t border-slate-200 p-3 bg-white flex items-center gap-3">
-                  <img
-                    src={pendingImage.previewUrl}
-                    alt="Preview"
-                    className="h-16 w-16 object-cover rounded-md border border-slate-200"
-                  />
-
-                  <div className="flex-1 min-w-0 text-sm text-slate-500">
-                    {imageError ? (
-                      <span className="text-red-600">
-                        {imageError}
-                      </span>
-                    ) : (
-                      "Ready to send this image?"
-                    )}
+                    <p className={`truncate text-xs mt-0.5 ${subtleTextClass}`}>
+                      {typingNames.length > 0
+                        ? `${typingNames.join(", ")} ${
+                            typingNames.length === 1
+                              ? "is"
+                              : "are"
+                          } typing...`
+                        : "Group chat"}
+                    </p>
                   </div>
 
                   <button
                     type="button"
-                    onClick={cancelImagePreview}
-                    className="px-3 py-1.5 text-sm rounded-md border border-slate-300 hover:bg-slate-50"
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={confirmSendImage}
-                    disabled={
-                      sendingImage ||
-                      Boolean(imageError)
+                    onClick={toggleTheme}
+                    className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${
+                      isDark
+                        ? "bg-slate-800 text-amber-300 hover:bg-slate-700"
+                        : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                    }`}
+                    title={
+                      isDark
+                        ? "Switch to light theme"
+                        : "Switch to dark theme"
                     }
-                    className="px-3 py-1.5 text-sm rounded-md bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-50"
+                    aria-label={
+                      isDark
+                        ? "Switch to light theme"
+                        : "Switch to dark theme"
+                    }
                   >
-                    {sendingImage
-                      ? "Sending..."
-                      : "Send"}
+                    {isDark ? "☀" : "☾"}
                   </button>
+                </div>
+
+              </div>
+
+              {/* ==================================================
+                  MESSAGE LIST
+                  ================================================== */}
+
+              <div
+                ref={messageListRef}
+                onScroll={handleScroll}
+                className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 sm:px-4 py-3 sm:py-4"
+                style={chatBackgroundStyle}
+              >
+
+                {/* IMPORTANT:
+                    This makes messages sit at the bottom
+                    when there are only a few messages,
+                    just like WhatsApp. */}
+
+                <div className="flex min-h-full flex-col justify-end gap-2">
+
+                  {messages.length === 0 && (
+                    <div className="flex-1 flex items-center justify-center">
+
+                      <div className="text-center text-slate-400">
+
+                        <div className="mx-auto mb-2 h-12 w-12 rounded-full bg-white flex items-center justify-center text-slate-300">
+                          #
+                        </div>
+
+                        <p className="text-sm">
+                          No messages yet.
+                        </p>
+
+                        <p className="text-xs mt-1">
+                          Start the conversation.
+                        </p>
+
+                      </div>
+
+                    </div>
+                  )}
+
+                  {messages.map((m) => (
+                    <MessageBubble
+                      key={m.id}
+                      message={m}
+                      isOwn={
+                        m.sender.id ===
+                        user.id
+                      }
+                      isDark={isDark}
+                    />
+                  ))}
+
+                </div>
+              </div>
+
+              {/* ==================================================
+                  TYPING
+                  ================================================== */}
+
+              {typingNames.length > 0 && (
+                <div className={`shrink-0 px-4 py-1.5 text-xs italic ${
+                  isDark
+                    ? "text-slate-400 bg-[#111b21]"
+                    : "text-slate-400 bg-[#efeae2]"
+                }`}>
+                  {typingNames.join(
+                    ", "
+                  )}{" "}
+                  {typingNames.length ===
+                  1
+                    ? "is"
+                    : "are"}{" "}
+                  typing...
                 </div>
               )}
 
-              <form
-                onSubmit={sendMessage}
-                className="shrink-0 border-t border-slate-200 p-2 sm:p-3 flex gap-2 bg-white"
-              >
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept="image/jpeg,image/png,image/webp,image/gif"
-                  onChange={handleFileInputChange}
-                  className="hidden"
-                />
+              {/* ==================================================
+                  IMAGE PREVIEW
+                  ================================================== */}
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    fileInputRef.current?.click()
-                  }
-                  title="Attach image"
-                  className="shrink-0 rounded-full sm:rounded-md border border-slate-300 h-10 w-10 sm:h-auto sm:w-auto sm:px-3 sm:py-2 text-slate-600 hover:bg-slate-50 flex items-center justify-center"
+              {pendingImage && (
+                <div className={`shrink-0 border-t px-3 py-2.5 ${panelClass}`}>
+
+                  <div className="flex items-center gap-3">
+
+                    <img
+                      src={
+                        pendingImage.previewUrl
+                      }
+                      alt="Preview"
+                      className="h-16 w-16 shrink-0 object-cover rounded-lg border border-slate-200"
+                    />
+
+                    <div className="flex-1 min-w-0 text-sm">
+
+                      {imageError ? (
+                        <span className="text-red-600">
+                          {imageError}
+                        </span>
+                      ) : (
+                        <span className="text-slate-500">
+                          Ready to send this
+                          image?
+                        </span>
+                      )}
+
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={
+                        cancelImagePreview
+                      }
+                      className="shrink-0 px-3 py-2 text-sm rounded-lg border border-slate-300 hover:bg-slate-50 active:bg-slate-100"
+                    >
+                      Cancel
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={
+                        confirmSendImage
+                      }
+                      disabled={
+                        sendingImage ||
+                        Boolean(
+                          imageError
+                        )
+                      }
+                      className="shrink-0 px-3 py-2 text-sm rounded-lg bg-slate-800 text-white hover:bg-slate-700 active:bg-slate-900 disabled:opacity-50"
+                    >
+                      {sendingImage
+                        ? "Sending..."
+                        : "Send"}
+                    </button>
+
+                  </div>
+                </div>
+              )}
+
+              {/* ==================================================
+                  MESSAGE COMPOSER
+                  ================================================== */}
+
+              <div className={`shrink-0 border-t px-2 sm:px-3 py-2 sm:py-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] ${panelClass}`}>
+
+                <form
+                  onSubmit={sendMessage}
+                  className="flex items-end gap-2"
                 >
-                  📎
-                </button>
 
-                <input
-                  value={draft}
-                  onChange={(e) =>
-                    handleDraftChange(e.target.value)
-                  }
-                  onPaste={handleComposerPaste}
-                  placeholder="Type a message..."
-                  autoComplete="off"
-                  className="min-w-0 flex-1 rounded-full sm:rounded-md border border-slate-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-slate-500"
-                />
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    onChange={
+                      handleFileInputChange
+                    }
+                    className="hidden"
+                  />
 
-                <button
-                  type="submit"
-                  onPointerDown={(e) => e.preventDefault()}
-                  className="shrink-0 rounded-full sm:rounded-md bg-slate-800 px-4 py-2.5 text-white font-medium hover:bg-slate-700 active:bg-slate-900"
-                >
-                  Send
-                </button>
-              </form>
+                  {/* Attach */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      fileInputRef.current?.click()
+                    }
+                    title="Attach image"
+                    aria-label="Attach image"
+                    className={`h-11 w-11 shrink-0 rounded-full border flex items-center justify-center ${
+                      isDark
+                        ? "border-slate-600 text-slate-300 hover:bg-slate-800 active:bg-slate-700"
+                        : "border-slate-300 text-slate-600 hover:bg-slate-50 active:bg-slate-100"
+                    }`}
+                  >
+                    <span className="text-lg">
+                      📎
+                    </span>
+                  </button>
+
+                  {/* Message input */}
+                  <input
+                    ref={messageInputRef}
+                    value={draft}
+                    onChange={(e) =>
+                      handleDraftChange(
+                        e.target.value
+                      )
+                    }
+                    onPaste={
+                      handleComposerPaste
+                    }
+                    placeholder="Type a message..."
+                    autoComplete="off"
+                    enterKeyHint="send"
+                    className={`min-w-0 flex-1 h-11 rounded-full border px-4 text-sm focus:outline-none focus:ring-2 ${
+                      isDark
+                        ? "border-slate-600 bg-[#202c33] text-slate-100 placeholder:text-slate-500 focus:bg-[#202c33] focus:ring-slate-600"
+                        : "border-slate-300 bg-slate-50 text-slate-800 placeholder:text-slate-400 focus:bg-white focus:ring-slate-400"
+                    }`}
+                  />
+
+                  {/* Send */}
+                  <button
+                    type="submit"
+                    aria-label="Send message"
+                    className="h-11 min-w-11 px-4 shrink-0 rounded-full bg-slate-800 text-white font-medium hover:bg-slate-700 active:bg-slate-900"
+                  >
+                    <span className="hidden sm:inline">
+                      Send
+                    </span>
+
+                    <span className="sm:hidden text-lg">
+                      ➤
+                    </span>
+                  </button>
+
+                </form>
+              </div>
             </>
           )}
         </main>
@@ -746,45 +1134,50 @@ export default function ChatPage() {
   );
 }
 
-function MessageBubble({ message, isOwn }) {
-  const senderName =
-    message.sender?.displayName ||
-    "Unknown User";
+// ======================================================
+// Message Bubble
+// ======================================================
 
+function MessageBubble({
+  message,
+  isOwn,
+  isDark,
+}) {
   return (
     <div
       className={`flex ${
-        isOwn ? "justify-end" : "justify-start"
+        isOwn
+          ? "justify-end"
+          : "justify-start"
       }`}
     >
       <div
-        className={`max-w-[82%] sm:max-w-md rounded-2xl px-3 py-2 ${
+        className={`max-w-[82%] sm:max-w-md rounded-2xl px-3 py-2 shadow-sm ${
           isOwn
             ? "bg-slate-800 text-white rounded-br-md"
-            : "bg-white border border-slate-200 text-slate-800 rounded-bl-md"
+            : isDark
+              ? "bg-[#202c33] border border-slate-700 text-slate-100 rounded-bl-md"
+              : "bg-white border border-slate-200 text-slate-800 rounded-bl-md"
         }`}
       >
+
         {!isOwn && (
-          <p className="text-xs font-medium text-slate-500 mb-0.5">
-            {senderName}
+          <p className="text-xs font-semibold text-slate-500 mb-0.5">
+            {message.sender.displayName}
           </p>
         )}
 
         {message.type === "IMAGE" ? (
-          message.image?.url ? (
-            <img
-              src={message.image.url}
-              alt="Shared"
-              className="max-w-full rounded-lg"
-              style={{ maxHeight: 260 }}
-            />
-          ) : (
-            <p className="text-sm">
-              Image unavailable
-            </p>
-          )
+          <img
+            src={message.image.url}
+            alt="Shared"
+            className="max-w-full w-auto rounded-xl object-contain"
+            style={{
+              maxHeight: 320,
+            }}
+          />
         ) : (
-          <p className="text-sm whitespace-pre-wrap break-words">
+          <p className="text-sm leading-5 whitespace-pre-wrap break-words">
             {message.text}
           </p>
         )}
@@ -796,15 +1189,14 @@ function MessageBubble({ message, isOwn }) {
               : "text-slate-400"
           }`}
         >
-          {message.createdAt
-            ? new Date(
-                message.createdAt
-              ).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })
-            : ""}
+          {new Date(
+            message.createdAt
+          ).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
         </p>
+
       </div>
     </div>
   );
