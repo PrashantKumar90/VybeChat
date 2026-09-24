@@ -21,6 +21,15 @@ export default function ChatPage() {
   const [imageError, setImageError] = useState("");
   const [sendingImage, setSendingImage] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+  const messageListRef = useRef(null);
+  const socketRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const messageInputRef = useRef(null);
+  const activeGroupIdRef = useRef(null);
+
+  const [showProfile, setShowProfile] = useState(false);
+
   const [theme, setTheme] = useState(() => {
     try {
       return localStorage.getItem("vybechat-theme") || "light";
@@ -29,11 +38,14 @@ export default function ChatPage() {
     }
   });
 
-  const messageListRef = useRef(null);
-  const socketRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const messageInputRef = useRef(null);
-  const activeGroupIdRef = useRef(null);
+  useEffect(() => {
+    try {
+      localStorage.setItem("vybechat-theme", theme);
+      document.documentElement.dataset.theme = theme;
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [theme]);
 
   // --------------------------------------------------
   // Initial load
@@ -64,14 +76,6 @@ export default function ChatPage() {
   useEffect(() => {
     activeGroupIdRef.current = activeGroupId;
   }, [activeGroupId]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("vybechat-theme", theme);
-    } catch {
-      // Ignore storage errors.
-    }
-  }, [theme]);
 
   useEffect(() => {
     return () => {
@@ -503,6 +507,19 @@ export default function ChatPage() {
     Object.values(typingUsers);
 
   // --------------------------------------------------
+  // Profile screen
+  // --------------------------------------------------
+
+  function openProfile() {
+    setShowProfile(true);
+    setActiveGroupId(null);
+  }
+
+  function closeProfile() {
+    setShowProfile(false);
+  }
+
+  // --------------------------------------------------
   // UI
   // --------------------------------------------------
 
@@ -528,9 +545,16 @@ export default function ChatPage() {
     backgroundSize: "28px 28px, 34px 34px",
   };
 
-  function toggleTheme() {
-    setTheme((current) =>
-      current === "dark" ? "light" : "dark"
+
+  if (showProfile) {
+    return (
+      <ProfileView
+        user={user}
+        theme={theme}
+        setTheme={setTheme}
+        onBack={closeProfile}
+        logout={logout}
+      />
     );
   }
 
@@ -556,18 +580,16 @@ export default function ChatPage() {
               </p>
             </div>
 
-            <div className="flex items-center gap-3 text-sm">
+            <div className="flex items-center gap-2 sm:gap-3 text-sm">
 
-              <span className="hidden sm:inline text-slate-500">
-                {user.displayName ||
-                  user.email}
+              <span className="hidden lg:inline text-slate-500 truncate max-w-48">
+                {user.displayName || user.email}
               </span>
 
-              {user.role ===
-                "SUPER_ADMIN" && (
+              {user.role === "SUPER_ADMIN" && (
                 <Link
                   to="/admin/users"
-                  className="hidden sm:inline text-slate-500 hover:text-slate-800"
+                  className="hidden sm:inline-flex h-9 items-center rounded-full px-3 text-slate-600 hover:bg-slate-100"
                 >
                   Admin
                 </Link>
@@ -575,38 +597,23 @@ export default function ChatPage() {
 
               <Link
                 to="/notification-settings"
-                className="hidden sm:inline text-slate-500 hover:text-slate-800"
+                className="inline-flex h-9 items-center rounded-full px-3 text-slate-600 hover:bg-slate-100"
+                title="Notification settings"
               >
-                Notifications
+                <span className="sm:hidden">Notifications</span>
+                <span className="hidden sm:inline">Notifications</span>
               </Link>
 
               <button
                 type="button"
-                onClick={toggleTheme}
-                className={`h-9 w-9 rounded-full flex items-center justify-center transition ${
-                  isDark
-                    ? "bg-slate-800 text-amber-300 hover:bg-slate-700"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                }`}
-                title={
-                  isDark
-                    ? "Switch to light theme"
-                    : "Switch to dark theme"
-                }
-                aria-label={
-                  isDark
-                    ? "Switch to light theme"
-                    : "Switch to dark theme"
-                }
+                onClick={openProfile}
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white px-3 text-slate-700 shadow-sm hover:bg-slate-50"
+                title="Profile"
               >
-                {isDark ? "☀" : "☾"}
-              </button>
-
-              <button
-                onClick={logout}
-                className={`${isDark ? "text-slate-300 hover:text-white" : "text-slate-500 hover:text-slate-800"}`}
-              >
-                Log out
+                <span className="h-6 w-6 rounded-full bg-slate-800 text-white flex items-center justify-center text-[11px] font-semibold">
+                  {(user.displayName || user.email || "U").charAt(0).toUpperCase()}
+                </span>
+                <span className="hidden sm:inline font-medium">Profile</span>
               </button>
 
             </div>
@@ -659,6 +666,25 @@ export default function ChatPage() {
             </div>
 
           </div>
+
+          <div className="ml-auto flex items-center gap-1 shrink-0">
+            <Link
+              to="/notification-settings"
+              className="h-9 px-2 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-100"
+              aria-label="Notification settings"
+            >
+              Notifications
+            </Link>
+            <button
+              type="button"
+              onClick={openProfile}
+              className="h-9 w-9 rounded-full border border-slate-200 bg-white flex items-center justify-center text-slate-700 shadow-sm"
+              aria-label="Profile"
+            >
+              {(user.displayName || user.email || "U").charAt(0).toUpperCase()}
+            </button>
+          </div>
+
         </header>
       )}
 
@@ -881,28 +907,6 @@ export default function ChatPage() {
                         : "Group chat"}
                     </p>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={toggleTheme}
-                    className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center ${
-                      isDark
-                        ? "bg-slate-800 text-amber-300 hover:bg-slate-700"
-                        : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                    }`}
-                    title={
-                      isDark
-                        ? "Switch to light theme"
-                        : "Switch to dark theme"
-                    }
-                    aria-label={
-                      isDark
-                        ? "Switch to light theme"
-                        : "Switch to dark theme"
-                    }
-                  >
-                    {isDark ? "☀" : "☾"}
-                  </button>
                 </div>
 
               </div>
@@ -1130,6 +1134,65 @@ export default function ChatPage() {
           )}
         </main>
       </div>
+    </div>
+  );
+}
+
+// ======================================================
+// Profile View
+// ======================================================
+
+function ProfileView({ user, theme, setTheme, onBack, logout }) {
+  const isDark = theme === "dark";
+  const initial = (user?.displayName || user?.email || "U").charAt(0).toUpperCase();
+
+  return (
+    <div className={`min-h-[100dvh] ${isDark ? "bg-[#0b141a] text-slate-100" : "bg-[#f7f9fa] text-slate-800"}`}>
+      <header className={`border-b px-4 py-3 ${isDark ? "bg-[#111b21] border-slate-700" : "bg-white border-slate-200"}`}>
+        <div className="max-w-2xl mx-auto flex items-center gap-3">
+          <button type="button" onClick={onBack} className={`h-10 w-10 rounded-full text-2xl ${isDark ? "hover:bg-slate-800" : "hover:bg-slate-100"}`} aria-label="Back">‹</button>
+          <div>
+            <h1 className="font-semibold">Profile</h1>
+            <p className="text-xs text-slate-400">Account & preferences</p>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-2xl mx-auto px-4 py-6 sm:py-8">
+        <section className={`rounded-2xl border p-5 sm:p-6 shadow-sm ${isDark ? "bg-[#111b21] border-slate-700" : "bg-white border-slate-200"}`}>
+          <div className="flex items-center gap-4">
+            <div className={`h-16 w-16 rounded-full flex items-center justify-center text-xl font-bold ${isDark ? "bg-slate-700 text-white" : "bg-slate-800 text-white"}`}>{initial}</div>
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold truncate">{user?.displayName || "User"}</h2>
+              <p className="text-sm text-slate-400 truncate">{user?.email || ""}</p>
+            </div>
+          </div>
+
+          <div className="mt-6">
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">User ID</label>
+            <div className={`mt-2 rounded-xl border px-3 py-3 text-sm break-all ${isDark ? "bg-[#202c33] border-slate-700" : "bg-slate-50 border-slate-200"}`}>
+              {user?.id || user?._id || "Not available"}
+            </div>
+          </div>
+        </section>
+
+        <section className={`mt-4 rounded-2xl border p-5 sm:p-6 shadow-sm ${isDark ? "bg-[#111b21] border-slate-700" : "bg-white border-slate-200"}`}>
+          <h2 className="font-semibold">Appearance</h2>
+          <p className="mt-1 text-sm text-slate-400">Choose how VYBE looks on your device.</p>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            {[["light","Light"],["dark","Dark"]].map(([value,label]) => (
+              <button key={value} type="button" onClick={() => setTheme(value)} className={`rounded-xl border px-4 py-3 text-sm font-medium transition ${theme === value ? "border-slate-800 bg-slate-800 text-white" : isDark ? "border-slate-700 hover:bg-slate-800" : "border-slate-200 hover:bg-slate-50"}`}>{label}</button>
+            ))}
+          </div>
+        </section>
+
+        <section className={`mt-4 rounded-2xl border p-5 sm:p-6 shadow-sm ${isDark ? "bg-[#111b21] border-slate-700" : "bg-white border-slate-200"}`}>
+          <h2 className="font-semibold">Settings</h2>
+          <Link to="/notification-settings" className={`mt-3 block rounded-xl border px-4 py-3 text-sm font-medium ${isDark ? "border-slate-700 hover:bg-slate-800" : "border-slate-200 hover:bg-slate-50"}`}>Notification Settings</Link>
+        </section>
+
+        <button type="button" onClick={logout} className="mt-6 w-full rounded-xl bg-slate-800 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-700">Log out</button>
+      </main>
     </div>
   );
 }
