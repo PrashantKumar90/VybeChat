@@ -667,23 +667,7 @@ export default function ChatPage() {
 
           </div>
 
-          <div className="ml-auto flex items-center gap-1 shrink-0">
-            <Link
-              to="/notification-settings"
-              className="h-9 px-2 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-100"
-              aria-label="Notification settings"
-            >
-              Notifications
-            </Link>
-            <button
-              type="button"
-              onClick={openProfile}
-              className="h-9 w-9 rounded-full border border-slate-200 bg-white flex items-center justify-center text-slate-700 shadow-sm"
-              aria-label="Profile"
-            >
-              {(user.displayName || user.email || "U").charAt(0).toUpperCase()}
-            </button>
-          </div>
+
 
         </header>
       )}
