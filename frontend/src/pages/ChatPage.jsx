@@ -383,7 +383,7 @@ export default function ChatPage() {
         socketRef.current?.emit("typing:stop", {
           groupId,
         });
-      }, 2000);
+      }, 1000);
     },
     []
   );
@@ -537,24 +537,116 @@ export default function ChatPage() {
     ? "text-slate-400"
     : "text-slate-400";
 
-  // WhatsApp-style chat wallpaper:
-  // stronger than the previous barely-visible dot texture,
-  // while still keeping messages easy to read.
+  // --------------------------------------------------
+  // WhatsApp-style coded chat wallpaper
+  // Pure inline SVG + CSS. No external image is used.
+  // --------------------------------------------------
+
+  const wallpaperSvg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="360" viewBox="0 0 360 360">
+  <g
+    fill="none"
+    stroke="${isDark ? "#64736f" : "#aaa49a"}"
+    stroke-width="1.45"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    opacity="${isDark ? "0.28" : "0.32"}"
+  >
+    <!-- chat bubble -->
+    <path d="M24 31c0-9 7-16 16-16h31c9 0 16 7 16 16s-7 16-16 16H51l-10 8 3-8h-4c-9 0-16-7-16-16z"/>
+    <circle cx="48" cy="31" r="1.5"/><circle cx="56" cy="31" r="1.5"/><circle cx="64" cy="31" r="1.5"/>
+
+    <!-- smiley -->
+    <circle cx="125" cy="30" r="19"/>
+    <circle cx="118" cy="26" r="1.8"/><circle cx="132" cy="26" r="1.8"/>
+    <path d="M116 34q9 8 18 0"/>
+
+    <!-- heart -->
+    <path d="M202 25c-7-9-20 1-10 11l10 10 10-10c10-10-3-20-10-11z"/>
+
+    <!-- star -->
+    <path d="M286 15l4 10 11 1-8 7 3 11-10-6-10 6 3-11-8-7 11-1z"/>
+
+    <!-- paper plane -->
+    <path d="M314 74l30-18-12 34-8-13-10-3z"/><path d="M324 77l20-21"/>
+
+    <!-- camera -->
+    <rect x="37" y="91" width="49" height="34" rx="7"/>
+    <path d="M48 91l5-8h16l5 8"/><circle cx="61.5" cy="108" r="9"/><circle cx="61.5" cy="108" r="3"/>
+
+    <!-- headphones -->
+    <path d="M120 108a22 22 0 0 1 44 0"/>
+    <path d="M120 108v13q0 6 7 6h5v-18h-12"/><path d="M164 108v13q0 6-7 6h-5v-18h12"/>
+
+    <!-- small sparkle -->
+    <path d="M214 94l3 8 8 3-8 3-3 8-3-8-8-3 8-3z"/>
+
+    <!-- calendar -->
+    <rect x="273" y="103" width="54" height="45" rx="5"/>
+    <path d="M273 116h54M286 97v13M314 97v13"/>
+    <path d="M285 128h6M299 128h6M313 128h6M285 139h6M299 139h6"/>
+
+    <!-- phone -->
+    <rect x="26" y="174" width="29" height="54" rx="5"/>
+    <path d="M32 181h17"/><circle cx="40.5" cy="218" r="2"/>
+    <circle cx="40.5" cy="198" r="8"/><path d="M36 198q4-5 9 0"/>
+
+    <!-- coffee cup -->
+    <path d="M91 190h38v18q0 11-19 11t-19-11z"/>
+    <path d="M129 195h8q9 0 9 8t-9 8h-8"/>
+    <path d="M101 181q-5-7 1-13M112 181q-5-7 1-13M123 181q-5-7 1-13"/>
+
+    <!-- laptop -->
+    <rect x="185" y="174" width="54" height="36" rx="3"/>
+    <path d="M177 216h70M189 211h46"/>
+
+    <!-- location pin -->
+    <path d="M292 173c-12 0-20 8-20 19 0 14 20 30 20 30s20-16 20-30c0-11-8-19-20-19z"/>
+    <circle cx="292" cy="192" r="6"/>
+
+    <!-- music note -->
+    <path d="M34 285v-34l25-6v28"/><circle cx="26" cy="288" r="7"/><circle cx="51" cy="281" r="7"/>
+    <path d="M59 245v-8q8 2 11 7"/>
+
+    <!-- rocket -->
+    <path d="M112 255q18 8 22 27l-13 14-14-13q2-18 5-28z"/>
+    <circle cx="124" cy="271" r="4"/><path d="M113 283l-10 8M126 294l-7 10"/>
+
+    <!-- message bubble -->
+    <path d="M184 267c0-9 7-15 16-15h35c9 0 16 6 16 15s-7 15-16 15h-17l-10 8 3-8h-11c-9 0-16-6-16-15z"/>
+    <circle cx="215" cy="267" r="1.5"/><circle cx="223" cy="267" r="1.5"/><circle cx="231" cy="267" r="1.5"/>
+
+    <!-- bicycle -->
+    <circle cx="286" cy="283" r="12"/><circle cx="327" cy="283" r="12"/>
+    <path d="M286 283l14-20 13 20h-27l13-20 15 0 13 20M302 263l-4-7h8"/>
+
+    <!-- tiny hearts -->
+    <path d="M73 308c-5-7-15 1-8 8l8 8 8-8c7-7-3-15-8-8z"/>
+    <path d="M172 330c-5-7-15 1-8 8l8 8 8-8c7-7-3-15-8-8z"/>
+
+    <!-- stars -->
+    <path d="M32 337l3 7 7 3-7 3-3 7-3-7-7-3 7-3z"/>
+    <path d="M258 317l3 8 8 3-8 3-3 8-3-8-8-3 8-3z"/>
+
+    <!-- decorative trails -->
+    <path d="M150 54q12 11 25 2"/><circle cx="150" cy="54" r="1.5"/><circle cx="158" cy="59" r="1.5"/><circle cx="167" cy="59" r="1.5"/>
+    <path d="M66 150q12 10 24 4"/><circle cx="66" cy="150" r="1.5"/><circle cx="74" cy="154" r="1.5"/>
+    <path d="M241 150q12-10 24-2"/><circle cx="241" cy="150" r="1.5"/><circle cx="249" cy="146" r="1.5"/>
+
+    <!-- little dots / circles -->
+    <circle cx="101" cy="45" r="3"/><circle cx="235" cy="53" r="4"/><circle cx="342" cy="154" r="3"/>
+    <circle cx="156" cy="225" r="3"/><circle cx="71" cy="253" r="4"/><circle cx="338" cy="242" r="4"/>
+  </g>
+</svg>`;
+
   const chatBackgroundStyle = {
     backgroundColor: isDark ? "#0b141a" : "#efeae2",
-    backgroundImage: isDark
-      ? `
-        radial-gradient(circle at 14px 14px, rgba(160,180,188,0.12) 0 1.2px, transparent 1.8px),
-        radial-gradient(circle at 42px 42px, rgba(160,180,188,0.08) 0 1px, transparent 1.7px),
-        linear-gradient(45deg, transparent 46%, rgba(160,180,188,0.055) 47%, rgba(160,180,188,0.055) 49%, transparent 50%)
-      `
-      : `
-        radial-gradient(circle at 14px 14px, rgba(120,105,90,0.12) 0 1.2px, transparent 1.8px),
-        radial-gradient(circle at 42px 42px, rgba(120,105,90,0.075) 0 1px, transparent 1.7px),
-        linear-gradient(45deg, transparent 46%, rgba(120,105,90,0.055) 47%, rgba(120,105,90,0.055) 49%, transparent 50%)
-      `,
-    backgroundSize: "56px 56px, 84px 84px, 112px 112px",
-    backgroundPosition: "0 0, 28px 28px, 0 0",
+    backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(
+      wallpaperSvg
+    )}")`,
+    backgroundRepeat: "repeat",
+    backgroundSize: "360px 360px",
+    backgroundPosition: "0 0",
   };
 
 
