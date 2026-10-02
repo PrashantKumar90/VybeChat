@@ -537,12 +537,24 @@ export default function ChatPage() {
     ? "text-slate-400"
     : "text-slate-400";
 
+  // WhatsApp-style chat wallpaper:
+  // stronger than the previous barely-visible dot texture,
+  // while still keeping messages easy to read.
   const chatBackgroundStyle = {
     backgroundColor: isDark ? "#0b141a" : "#efeae2",
     backgroundImage: isDark
-      ? "radial-gradient(circle at 20% 20%, rgba(42,57,66,0.22) 0 1px, transparent 1px), radial-gradient(circle at 80% 70%, rgba(42,57,66,0.18) 0 1px, transparent 1px)"
-      : "radial-gradient(circle at 20% 20%, rgba(255,255,255,0.55) 0 1px, transparent 1px), radial-gradient(circle at 80% 70%, rgba(160,140,120,0.12) 0 1px, transparent 1px)",
-    backgroundSize: "28px 28px, 34px 34px",
+      ? `
+        radial-gradient(circle at 14px 14px, rgba(160,180,188,0.12) 0 1.2px, transparent 1.8px),
+        radial-gradient(circle at 42px 42px, rgba(160,180,188,0.08) 0 1px, transparent 1.7px),
+        linear-gradient(45deg, transparent 46%, rgba(160,180,188,0.055) 47%, rgba(160,180,188,0.055) 49%, transparent 50%)
+      `
+      : `
+        radial-gradient(circle at 14px 14px, rgba(120,105,90,0.12) 0 1.2px, transparent 1.8px),
+        radial-gradient(circle at 42px 42px, rgba(120,105,90,0.075) 0 1px, transparent 1.7px),
+        linear-gradient(45deg, transparent 46%, rgba(120,105,90,0.055) 47%, rgba(120,105,90,0.055) 49%, transparent 50%)
+      `,
+    backgroundSize: "56px 56px, 84px 84px, 112px 112px",
+    backgroundPosition: "0 0, 28px 28px, 0 0",
   };
 
 
@@ -935,17 +947,44 @@ export default function ChatPage() {
                     </div>
                   )}
 
-                  {messages.map((m) => (
-                    <MessageBubble
-                      key={m.id}
-                      message={m}
-                      isOwn={
-                        m.sender.id ===
-                        user.id
-                      }
-                      isDark={isDark}
-                    />
-                  ))}
+                  {messages.map((m, index) => {
+                    const messageDate = new Date(m.createdAt);
+                    const previousMessage = messages[index - 1];
+                    const previousDate = previousMessage
+                      ? new Date(previousMessage.createdAt)
+                      : null;
+
+                    const isNewDate =
+                      !previousDate ||
+                      messageDate.toDateString() !== previousDate.toDateString();
+
+                    return (
+                      <div key={m.id}>
+                        {isNewDate && (
+                          <div className="flex justify-center my-3">
+                            <span
+                              className={`px-3 py-1 rounded-lg text-[11px] font-medium shadow-sm ${
+                                isDark
+                                  ? "bg-[#202c33] text-slate-300"
+                                  : "bg-[#e1d9cf] text-slate-600"
+                              }`}
+                            >
+                              {formatMessageDate(messageDate)}
+                            </span>
+                          </div>
+                        )}
+
+                        <MessageBubble
+                          message={m}
+                          isOwn={
+                            m.sender.id ===
+                            user.id
+                          }
+                          isDark={isDark}
+                        />
+                      </div>
+                    );
+                  })}
 
                 </div>
               </div>
@@ -1180,10 +1219,66 @@ function ProfileView({ user, theme, setTheme, onBack, logout }) {
           <Link to="/notification-settings" className={`mt-3 block rounded-xl border px-4 py-3 text-sm font-medium ${isDark ? "border-slate-700 hover:bg-slate-800" : "border-slate-200 hover:bg-slate-50"}`}>Notification Settings</Link>
         </section>
 
+        {user?.role === "SUPER_ADMIN" && (
+          <section className={`mt-4 rounded-2xl border p-5 sm:p-6 shadow-sm ${isDark ? "bg-[#111b21] border-slate-700" : "bg-white border-slate-200"}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold">Admin & Permissions</h2>
+                <p className="mt-1 text-sm text-slate-400">Your Super Admin permissions in VYBE.</p>
+              </div>
+              <span className="shrink-0 rounded-full bg-slate-800 px-3 py-1 text-[11px] font-semibold text-white">SUPER ADMIN</span>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {[
+                "Manage users and account status",
+                "Approve or reject new registrations",
+                "Create, edit, and delete groups",
+                "Add or remove users from groups",
+                "Promote users to Group Admin",
+                "Demote Group Admins",
+                "Access and manage all groups",
+              ].map((permission) => (
+                <div
+                  key={permission}
+                  className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 text-sm ${isDark ? "border-slate-700 bg-[#202c33]" : "border-slate-200 bg-slate-50"}`}
+                >
+                  <span className="mt-0.5 text-green-500">✓</span>
+                  <span>{permission}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         <button type="button" onClick={logout} className="mt-6 w-full rounded-xl bg-slate-800 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-700">Log out</button>
       </main>
     </div>
   );
+}
+
+// ======================================================
+// Message Date Separator
+// ======================================================
+
+function formatMessageDate(date) {
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return "Today";
+  }
+
+  if (date.toDateString() === yesterday.toDateString()) {
+    return "Yesterday";
+  }
+
+  return date.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
 }
 
 // ======================================================
