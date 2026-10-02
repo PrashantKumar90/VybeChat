@@ -383,7 +383,7 @@ export default function ChatPage() {
         socketRef.current?.emit("typing:stop", {
           groupId,
         });
-      }, 1000);
+      }, 300);
     },
     []
   );
